@@ -1,0 +1,251 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Clipcut — Long video in, short clips out</title>
+<style>
+  :root{
+    --ink:#151417;
+    --paper:#EFEDE7;
+    --line:#151417;
+    --accent:#2F5D50;
+    --accent-2:#E8DED1;
+  }
+  *{box-sizing:border-box;}
+  body{
+    margin:0;
+    background:var(--paper);
+    color:var(--ink);
+    font-family:'Courier New', ui-monospace, monospace;
+    min-height:100vh;
+  }
+  header{
+    border-bottom:2px solid var(--line);
+    padding:28px 20px 20px;
+  }
+  .wordmark{
+    font-family: Georgia, 'Times New Roman', serif;
+    font-size:32px;
+    font-weight:700;
+    letter-spacing:-0.5px;
+  }
+  .wordmark span{color:var(--accent);}
+  .tag{
+    margin-top:6px;
+    font-size:13px;
+    letter-spacing:0.06em;
+    text-transform:uppercase;
+    opacity:0.7;
+  }
+  main{
+    max-width:640px;
+    margin:0 auto;
+    padding:32px 20px 80px;
+  }
+  .panel{
+    border:2px solid var(--line);
+    background:#fff;
+    padding:24px;
+    margin-bottom:24px;
+  }
+  label{
+    display:block;
+    font-size:12px;
+    text-transform:uppercase;
+    letter-spacing:0.08em;
+    margin-bottom:8px;
+    opacity:0.8;
+  }
+  input[type=text], input[type=number]{
+    width:100%;
+    padding:12px;
+    border:2px solid var(--line);
+    font-family:inherit;
+    font-size:15px;
+    background:var(--paper);
+  }
+  .row{
+    display:flex;
+    gap:16px;
+    margin-top:16px;
+  }
+  .row > div{flex:1;}
+  button{
+    margin-top:20px;
+    width:100%;
+    padding:16px;
+    background:var(--ink);
+    color:var(--paper);
+    border:none;
+    font-family:inherit;
+    font-size:15px;
+    text-transform:uppercase;
+    letter-spacing:0.08em;
+    cursor:pointer;
+  }
+  button:disabled{opacity:0.5; cursor:default;}
+  button:hover:not(:disabled){background:var(--accent);}
+  #status{
+    margin-top:16px;
+    font-size:13px;
+    opacity:0.8;
+    white-space:pre-line;
+  }
+  .clip{
+    border:2px solid var(--line);
+    background:#fff;
+    padding:16px;
+    margin-bottom:14px;
+    display:flex;
+    gap:16px;
+    align-items:center;
+  }
+  .clip .n{
+    font-family:Georgia, serif;
+    font-size:28px;
+    font-weight:700;
+    color:var(--accent);
+    min-width:32px;
+  }
+  .clip .meta{flex:1;}
+  .clip .meta .t{font-size:13px; opacity:0.7; margin-bottom:4px;}
+  .clip .meta .preview{font-size:13px; line-height:1.4;}
+  .clip a{
+    border:2px solid var(--line);
+    padding:8px 14px;
+    text-decoration:none;
+    color:var(--ink);
+    font-size:12px;
+    text-transform:uppercase;
+    letter-spacing:0.05em;
+    white-space:nowrap;
+  }
+  .clip a:hover{background:var(--ink); color:var(--paper);}
+  .note{
+    font-size:12px;
+    opacity:0.65;
+    line-height:1.5;
+    margin-top:24px;
+  }
+  .error{
+    border:2px solid #b23b3b;
+    background:#fdf0f0;
+    color:#8f2020;
+    padding:14px;
+    font-size:13px;
+    margin-top:16px;
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="wordmark">clip<span>cut</span></div>
+  <div class="tag">long video in — vertical clips out</div>
+</header>
+
+<main>
+  <div class="panel">
+    <label for="url">Video link</label>
+    <input type="text" id="url" placeholder="https://www.youtube.com/watch?v=...">
+
+    <div class="row">
+      <div>
+        <label for="num">Clips to make</label>
+        <input type="number" id="num" value="5" min="1" max="10">
+      </div>
+      <div>
+        <label for="len">Seconds per clip</label>
+        <input type="number" id="len" value="45" min="15" max="90">
+      </div>
+    </div>
+
+    <button id="go">Generate clips</button>
+    <div id="status"></div>
+    <div id="error"></div>
+  </div>
+
+  <div id="results"></div>
+
+  <div class="note">
+    First run on a new video takes a few minutes — the server downloads it,
+    listens to the whole thing, and picks the best moments before cutting.
+    Only clip from videos you own or have permission to repost.
+  </div>
+</main>
+
+<script>
+  // ⚠️ Replace this with YOUR Render backend URL once deployed, e.g.
+  // "https://clipcut-backend.onrender.com"
+  const API_BASE = "PASTE_YOUR_RENDER_URL_HERE";
+
+  const goBtn = document.getElementById('go');
+  const statusEl = document.getElementById('status');
+  const errorEl = document.getElementById('error');
+  const resultsEl = document.getElementById('results');
+
+  goBtn.addEventListener('click', async () => {
+    const url = document.getElementById('url').value.trim();
+    const num = parseInt(document.getElementById('num').value, 10);
+    const len = parseInt(document.getElementById('len').value, 10);
+
+    errorEl.innerHTML = '';
+    resultsEl.innerHTML = '';
+
+    if (!url) {
+      errorEl.innerHTML = '<div class="error">Paste a video link first.</div>';
+      return;
+    }
+    if (API_BASE === "PASTE_YOUR_RENDER_URL_HERE") {
+      errorEl.innerHTML = '<div class="error">Backend URL not set yet — see README step 5.</div>';
+      return;
+    }
+
+    goBtn.disabled = true;
+    statusEl.textContent = "Working on it — downloading, listening, and cutting clips. This can take a few minutes for longer videos...";
+
+    try {
+      const res = await fetch(`${API_BASE}/process`, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({
+          youtube_url: url,
+          num_clips: num,
+          clip_length_seconds: len
+        })
+      });
+
+      const data = await res.json();
+
+      if (!res.ok) {
+        throw new Error(data.detail || 'Something went wrong.');
+      }
+
+      statusEl.textContent = `Done — ${data.clips.length} clip(s) ready below.`;
+
+      data.clips.forEach(c => {
+        const div = document.createElement('div');
+        div.className = 'clip';
+        div.innerHTML = `
+          <div class="n">${String(c.clip).padStart(2,'0')}</div>
+          <div class="meta">
+            <div class="t">${c.start}s – ${c.end}s</div>
+            <div class="preview">${c.preview_text}...</div>
+          </div>
+          <a href="${API_BASE}${c.download_url}" download target="_blank">Download</a>
+        `;
+        resultsEl.appendChild(div);
+      });
+
+    } catch (err) {
+      errorEl.innerHTML = `<div class="error">${err.message}</div>`;
+      statusEl.textContent = '';
+    } finally {
+      goBtn.disabled = false;
+    }
+  });
+</script>
+
+</body>
+  </html>
