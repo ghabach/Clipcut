@@ -38,7 +38,7 @@ app.add_middleware(
 app.mount("/files", StaticFiles(directory=str(JOBS_DIR)), name="files")
 
 print("Loading transcription model... (first run may take a minute)")
-model = WhisperModel("small", device="cpu", compute_type="int8")
+model = WhisperModel("tiny", device="cpu", compute_type="int8")
 print("Model loaded.")
 
 
