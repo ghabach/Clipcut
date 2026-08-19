@@ -10,7 +10,6 @@
     --paper:#EFEDE7;
     --line:#151417;
     --accent:#2F5D50;
-    --accent-2:#E8DED1;
   }
   *{box-sizing:border-box;}
   body{
@@ -57,7 +56,7 @@
     margin-bottom:8px;
     opacity:0.8;
   }
-  input[type=text], input[type=number], input[type=file]{
+  input[type=number], input[type=file]{
     width:100%;
     padding:12px;
     border:2px solid var(--line);
@@ -92,6 +91,19 @@
     opacity:0.8;
     white-space:pre-line;
   }
+  #progressBarWrap{
+    margin-top:12px;
+    height:8px;
+    border:2px solid var(--line);
+    background:var(--paper);
+    display:none;
+  }
+  #progressBar{
+    height:100%;
+    width:0%;
+    background:var(--accent);
+    transition:width 0.2s;
+  }
   .clip{
     border:2px solid var(--line);
     background:#fff;
@@ -109,8 +121,7 @@
     min-width:32px;
   }
   .clip .meta{flex:1;}
-  .clip .meta .t{font-size:13px; opacity:0.7; margin-bottom:4px;}
-  .clip .meta .preview{font-size:13px; line-height:1.4;}
+  .clip .meta .t{font-size:13px; opacity:0.7;}
   .clip a{
     border:2px solid var(--line);
     padding:8px 14px;
@@ -142,7 +153,7 @@
 
 <header>
   <div class="wordmark">clip<span>cut</span></div>
-  <div class="tag">long video in — vertical clips out</div>
+  <div class="tag">long video in — vertical clips out (runs on your phone)</div>
 </header>
 
 <main>
@@ -153,15 +164,16 @@
     <div class="row">
       <div>
         <label for="num">Clips to make</label>
-        <input type="number" id="num" value="5" min="1" max="10">
+        <input type="number" id="num" value="3" min="1" max="6">
       </div>
       <div>
         <label for="len">Seconds per clip</label>
-        <input type="number" id="len" value="45" min="15" max="90">
+        <input type="number" id="len" value="30" min="10" max="60">
       </div>
     </div>
 
-    <button id="go">Generate clips</button>
+    <button id="go" disabled>Loading engine...</button>
+    <div id="progressBarWrap"><div id="progressBar"></div></div>
     <div id="status"></div>
     <div id="error"></div>
   </div>
@@ -169,21 +181,74 @@
   <div id="results"></div>
 
   <div class="note">
-    First run on a new video takes a few minutes — the server listens to the
-    whole thing and picks the best moments before cutting. Only clip videos
-    you own or have permission to repost.
+    Everything runs directly on your phone — no server, no upload, no waiting on anyone else's hardware.
+    Works best with shorter videos (under ~2 min) since your phone is doing all the work.
+    Only clip videos you own or have permission to repost.
   </div>
 </main>
 
+<script src="https://unpkg.com/@ffmpeg/ffmpeg@0.11.6/dist/ffmpeg.min.js"></script>
 <script>
-  const API_BASE = "https://clipcut-fegq.onrender.com";
+  const { createFFmpeg, fetchFile } = FFmpeg;
+  const ffmpeg = createFFmpeg({
+    log: true,
+    corePath: 'https://unpkg.com/@ffmpeg/core@0.11.0/dist/ffmpeg-core.js',
+  });
 
   const goBtn = document.getElementById('go');
   const statusEl = document.getElementById('status');
   const errorEl = document.getElementById('error');
   const resultsEl = document.getElementById('results');
+  const progressBarWrap = document.getElementById('progressBarWrap');
+  const progressBar = document.getElementById('progressBar');
+
+  let ready = false;
+
+  (async () => {
+    statusEl.textContent = "Loading video engine (first time only, ~25MB)...";
+    await ffmpeg.load();
+    ready = true;
+    goBtn.disabled = false;
+    goBtn.textContent = "Generate clips";
+    statusEl.textContent = "Ready.";
+  })();
+
+  ffmpeg.setProgress(({ ratio }) => {
+    if (ratio >= 0 && ratio <= 1) {
+      progressBar.style.width = `${Math.round(ratio * 100)}%`;
+    }
+  });
+
+  function getVideoDuration(file) {
+    return new Promise((resolve, reject) => {
+      const video = document.createElement('video');
+      video.preload = 'metadata';
+      video.onloadedmetadata = () => {
+        URL.revokeObjectURL(video.src);
+        resolve(video.duration);
+      };
+      video.onerror = () => reject(new Error("Could not read video file."));
+      video.src = URL.createObjectURL(file);
+    });
+  }
+
+  function pickRandomWindows(totalDuration, numClips, clipLen) {
+    if (totalDuration < clipLen) return [0];
+    const maxStart = totalDuration - clipLen;
+    const chosen = [];
+    let attempts = 0;
+    while (chosen.length < numClips && attempts < 200) {
+      attempts++;
+      const start = Math.random() * maxStart;
+      const overlap = chosen.some(c => Math.abs(start - c) < clipLen);
+      if (!overlap) chosen.push(start);
+    }
+    return chosen.sort((a, b) => a - b);
+  }
 
   goBtn.addEventListener('click', async () => {
+    if (!ready) return;
+
     const fileInput = document.getElementById('file');
     const file = fileInput.files[0];
     const num = parseInt(document.getElementById('num').value, 10);
@@ -198,44 +263,64 @@
     }
 
     goBtn.disabled = true;
-    statusEl.textContent = "Uploading and processing — listening to the video and cutting clips. This can take a few minutes for longer videos...";
+    progressBarWrap.style.display = 'block';
 
     try {
-      const formData = new FormData();
-      formData.append('file', file);
-      formData.append('num_clips', num);
-      formData.append('clip_length_seconds', len);
+      statusEl.textContent = "Reading video...";
+      const duration = await getVideoDuration(file);
+      if (duration < 5) throw new Error("Video is too short.");
 
-      const res = await fetch(`${API_BASE}/process-upload`, {
-        method: 'POST',
-        body: formData
-      });
+      const clipLen = Math.min(len, Math.floor(duration));
+      const starts = pickRandomWindows(duration, num, clipLen);
 
-      const data = await res.json();
+      statusEl.textContent = "Loading video into engine...";
+      const inputName = 'input' + (file.name.match(/\.\w+$/)?.[0] || '.mp4');
+      ffmpeg.FS('writeFile', inputName, await fetchFile(file));
 
-      if (!res.ok) {
-        throw new Error(data.detail || 'Something went wrong.');
-      }
+      for (let i = 0; i < starts.length; i++) {
+        const start = starts[i];
+        const actualLen = Math.min(clipLen, duration - start);
+        const outName = `clip_${i + 1}.mp4`;
 
-      statusEl.textContent = `Done — ${data.clips.length} clip(s) ready below.`;
+        statusEl.textContent = `Cutting clip ${i + 1} of ${starts.length}...`;
+        progressBar.style.width = '0%';
 
-      data.clips.forEach(c => {
+        await ffmpeg.run(
+          '-ss', String(start),
+          '-i', inputName,
+          '-t', String(actualLen),
+          '-vf', 'scale=-2:1920,crop=1080:1920',
+          '-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '28',
+          '-c:a', 'aac', '-b:a', '128k',
+          outName
+        );
+
+        const data = ffmpeg.FS('readFile', outName);
+        const blob = new Blob([data.buffer], { type: 'video/mp4' });
+        const url = URL.createObjectURL(blob);
+
         const div = document.createElement('div');
         div.className = 'clip';
         div.innerHTML = `
-          <div class="n">${String(c.clip).padStart(2,'0')}</div>
+          <div class="n">${String(i + 1).padStart(2, '0')}</div>
           <div class="meta">
-            <div class="t">${c.start}s – ${c.end}s</div>
-            <div class="preview">${c.preview_text}...</div>
+            <div class="t">${start.toFixed(1)}s – ${(start + actualLen).toFixed(1)}s</div>
           </div>
-          <a href="${API_BASE}${c.download_url}" download target="_blank">Download</a>
+          <a href="${url}" download="clip_${i + 1}.mp4">Download</a>
         `;
         resultsEl.appendChild(div);
-      });
+
+        ffmpeg.FS('unlink', outName);
+      }
+
+      ffmpeg.FS('unlink', inputName);
+      statusEl.textContent = `Done — ${starts.length} clip(s) ready above.`;
+      progressBarWrap.style.display = 'none';
 
     } catch (err) {
       errorEl.innerHTML = `<div class="error">${err.message}</div>`;
       statusEl.textContent = '';
+      progressBarWrap.style.display = 'none';
     } finally {
       goBtn.disabled = false;
     }
