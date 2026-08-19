@@ -15,7 +15,7 @@ import shutil
 import subprocess
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -169,6 +169,38 @@ def cut_and_caption(video_path: Path, clip: dict, out_path: Path, srt_path: Path
         raise RuntimeError(f"ffmpeg failed:\n{result.stderr}")
 
 
+def run_pipeline(job_id: str, job_dir: Path, source_path: Path, num_clips: int, clip_length_seconds: int):
+    segments = transcribe(source_path)
+    if not segments:
+        raise HTTPException(422, "Could not transcribe any speech from this video.")
+
+    clips = pick_clips(segments, num_clips, clip_length_seconds)
+    if not clips:
+        raise HTTPException(422, "Video too short to generate clips.")
+
+    results = []
+    for idx, clip in enumerate(clips, start=1):
+        clip_segs = clip["segs"]
+        srt_path = job_dir / f"clip_{idx}.srt"
+        write_srt(clip_segs, clip["start"], srt_path)
+
+        out_name = f"clip_{idx}.mp4"
+        out_path = job_dir / out_name
+        cut_and_caption(source_path, clip, out_path, srt_path)
+
+        results.append({
+            "clip": idx,
+            "start": round(clip["start"], 1),
+            "end": round(clip["end"], 1),
+            "preview_text": " ".join(s["text"] for s in clip_segs)[:120],
+            "download_url": f"/files/{job_id}/{out_name}",
+        })
+
+    source_path.unlink(missing_ok=True)
+
+    return {"job_id": job_id, "clips": results}
+
+
 @app.post("/process")
 def process_video(req: ClipRequest):
     job_id = uuid.uuid4().hex[:10]
@@ -181,37 +213,31 @@ def process_video(req: ClipRequest):
     try:
         source_path = job_dir / "source.mp4"
         download_video(req.youtube_url, source_path)
+        return run_pipeline(job_id, job_dir, source_path, req.num_clips, req.clip_length_seconds)
+    except HTTPException:
+        raise
+    except Exception as e:
+        shutil.rmtree(job_dir, ignore_errors=True)
+        raise HTTPException(500, f"Something went wrong: {e}")
 
-        segments = transcribe(source_path)
-        if not segments:
-            raise HTTPException(422, "Could not transcribe any speech from this video.")
 
-        clips = pick_clips(segments, req.num_clips, req.clip_length_seconds)
-        if not clips:
-            raise HTTPException(422, "Video too short to generate clips.")
+@app.post("/process-upload")
+async def process_upload(
+    file: UploadFile = File(...),
+    num_clips: int = Form(5),
+    clip_length_seconds: int = Form(45),
+):
+    job_id = uuid.uuid4().hex[:10]
+    job_dir = JOBS_DIR / job_id
+    job_dir.mkdir(parents=True, exist_ok=True)
 
-        results = []
-        for idx, clip in enumerate(clips, start=1):
-            clip_segs = clip["segs"]
-            srt_path = job_dir / f"clip_{idx}.srt"
-            write_srt(clip_segs, clip["start"], srt_path)
+    try:
+        suffix = Path(file.filename).suffix or ".mp4"
+        source_path = job_dir / f"source{suffix}"
+        with open(source_path, "wb") as f:
+            shutil.copyfileobj(file.file, f)
 
-            out_name = f"clip_{idx}.mp4"
-            out_path = job_dir / out_name
-            cut_and_caption(source_path, clip, out_path, srt_path)
-
-            results.append({
-                "clip": idx,
-                "start": round(clip["start"], 1),
-                "end": round(clip["end"], 1),
-                "preview_text": " ".join(s["text"] for s in clip_segs)[:120],
-                "download_url": f"/files/{job_id}/{out_name}",
-            })
-
-        source_path.unlink(missing_ok=True)
-
-        return {"job_id": job_id, "clips": results}
-
+        return run_pipeline(job_id, job_dir, source_path, num_clips, clip_length_seconds)
     except HTTPException:
         raise
     except Exception as e:
